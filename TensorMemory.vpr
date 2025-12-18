@@ -1,0 +1,407 @@
+field data: Seq[Int]
+field shape: Seq[Int]
+field strides: Seq[Int]
+field ndim: Int
+field refcount: Int
+
+predicate TensorValid(t: Ref) {
+  acc(t.data) &&
+  acc(t.shape) &&
+  acc(t.strides) &&
+  acc(t.ndim) &&
+  acc(t.refcount) &&
+  t.ndim == |t.shape| &&
+  t.ndim == |t.strides| &&
+  |t.data| == shapeSize(t.shape) &&
+  t.refcount > 0
+}
+
+function shapeSize(shape: Seq[Int]): Int
+  requires |shape| >= 0
+  ensures result >= 1
+{
+  |shape| == 0 ? 1 : shape[0] * shapeSize(shape[1..])
+}
+
+function computeStrides(shape: Seq[Int], i: Int): Seq[Int]
+  requires 0 <= i && i <= |shape|
+  ensures |result| == |shape|
+{
+  i == |shape| ? Seq[Int]() :
+  Seq(strideForIndex(shape, i)) ++ computeStrides(shape, i + 1)
+}
+
+function strideForIndex(shape: Seq[Int], i: Int): Int
+  requires 0 <= i && i < |shape|
+  ensures result >= 1
+{
+  i == |shape| - 1 ? 1 : shape[i + 1] * strideForIndex(shape, i + 1)
+}
+
+function getFlatIndex(indices: Seq[Int], strides: Seq[Int]): Int
+  requires |indices| == |strides|
+  requires forall i: Int :: 0 <= i && i < |indices| ==> indices[i] >= 0
+{
+  |indices| == 0 ? 0 : indices[0] * strides[0] + getFlatIndex(indices[1..], strides[1..])
+}
+
+method tensorInit(shape: Seq[Int], dataVal: Seq[Int]) returns (t: Ref)
+  requires |shape| > 0
+  requires |dataVal| == shapeSize(shape)
+  ensures TensorValid(t)
+  ensures t.shape == shape
+  ensures t.data == dataVal
+  ensures t.refcount == 1
+{
+  t := new(data, shape, strides, ndim, refcount)
+  t.data := dataVal
+  t.shape := shape
+  t.strides := computeStrides(shape, 0)
+  t.ndim := |shape|
+  t.refcount := 1
+  fold TensorValid(t)
+}
+
+method tensorRetain(t: Ref)
+  requires TensorValid(t)
+  ensures TensorValid(t)
+  ensures t.refcount == old(t.refcount) + 1
+  ensures t.data == old(t.data)
+  ensures t.shape == old(t.shape)
+{
+  unfold TensorValid(t)
+  t.refcount := t.refcount + 1
+  fold TensorValid(t)
+}
+
+method tensorRelease(t: Ref) returns (shouldFree: Bool)
+  requires TensorValid(t)
+  ensures shouldFree ==> old(t.refcount) == 1
+  ensures !shouldFree ==> TensorValid(t) && t.refcount == old(t.refcount) - 1
+{
+  unfold TensorValid(t)
+  if (t.refcount == 1) {
+    shouldFree := true
+  } else {
+    t.refcount := t.refcount - 1
+    shouldFree := false
+    fold TensorValid(t)
+  }
+}
+
+method tensorGet(t: Ref, indices: Seq[Int]) returns (value: Int, success: Bool)
+  requires TensorValid(t)
+  requires |indices| == t.ndim
+  requires forall i: Int :: 0 <= i && i < |indices| ==> 0 <= indices[i] && indices[i] < t.shape[i]
+  ensures TensorValid(t)
+  ensures success
+{
+  unfold TensorValid(t)
+  var flatIdx: Int := getFlatIndex(indices, t.strides)
+  assert 0 <= flatIdx && flatIdx < |t.data|
+  value := t.data[flatIdx]
+  success := true
+  fold TensorValid(t)
+}
+
+method tensorSet(t: Ref, indices: Seq[Int], value: Int)
+  requires TensorValid(t)
+  requires |indices| == t.ndim
+  requires forall i: Int :: 0 <= i && i < |indices| ==> 0 <= indices[i] && indices[i] < t.shape[i]
+  ensures TensorValid(t)
+  ensures t.shape == old(t.shape)
+  ensures |t.data| == old(|t.data|)
+{
+  unfold TensorValid(t)
+  var flatIdx: Int := getFlatIndex(indices, t.strides)
+  assert 0 <= flatIdx && flatIdx < |t.data|
+  t.data := t.data[flatIdx := value]
+  fold TensorValid(t)
+}
+
+method tensorFill(t: Ref, value: Int)
+  requires TensorValid(t)
+  ensures TensorValid(t)
+  ensures |t.data| == old(|t.data|)
+  ensures t.shape == old(t.shape)
+  ensures forall i: Int :: 0 <= i && i < |t.data| ==> t.data[i] == value
+{
+  unfold TensorValid(t)
+  var i: Int := 0
+  while (i < |t.data|)
+    invariant 0 <= i && i <= |t.data|
+    invariant acc(t.data)
+    invariant forall j: Int :: 0 <= j && j < i ==> t.data[j] == value
+    invariant |t.data| == old(|t.data|)
+  {
+    t.data := t.data[i := value]
+    i := i + 1
+  }
+  fold TensorValid(t)
+}
+
+method tensorAddElementwise(t1: Ref, t2: Ref) returns (t3: Ref, success: Bool)
+  requires TensorValid(t1)
+  requires TensorValid(t2)
+  requires t1.shape == t2.shape
+  ensures TensorValid(t1)
+  ensures TensorValid(t2)
+  ensures success ==> TensorValid(t3)
+  ensures success ==> t3.shape == t1.shape
+  ensures success ==> |t3.data| == |t1.data|
+{
+  unfold TensorValid(t1)
+  unfold TensorValid(t2)
+  
+  var resultData: Seq[Int] := Seq[Int]()
+  var i: Int := 0
+  
+  while (i < |t1.data|)
+    invariant 0 <= i && i <= |t1.data|
+    invariant |resultData| == i
+    invariant acc(t1.data) && acc(t2.data)
+  {
+    resultData := resultData ++ Seq(t1.data[i] + t2.data[i])
+    i := i + 1
+  }
+  
+  fold TensorValid(t1)
+  fold TensorValid(t2)
+  
+  t3 := new(data, shape, strides, ndim, refcount)
+  t3.data := resultData
+  t3.shape := t1.shape
+  t3.strides := t1.strides
+  t3.ndim := t1.ndim
+  t3.refcount := 1
+  fold TensorValid(t3)
+  success := true
+}
+
+method tensorMulElementwise(t1: Ref, t2: Ref) returns (t3: Ref, success: Bool)
+  requires TensorValid(t1)
+  requires TensorValid(t2)
+  requires t1.shape == t2.shape
+  ensures TensorValid(t1)
+  ensures TensorValid(t2)
+  ensures success ==> TensorValid(t3)
+  ensures success ==> t3.shape == t1.shape
+{
+  unfold TensorValid(t1)
+  unfold TensorValid(t2)
+  
+  var resultData: Seq[Int] := Seq[Int]()
+  var i: Int := 0
+  
+  while (i < |t1.data|)
+    invariant 0 <= i && i <= |t1.data|
+    invariant |resultData| == i
+    invariant acc(t1.data) && acc(t2.data)
+  {
+    resultData := resultData ++ Seq(t1.data[i] * t2.data[i])
+    i := i + 1
+  }
+  
+  fold TensorValid(t1)
+  fold TensorValid(t2)
+  
+  t3 := new(data, shape, strides, ndim, refcount)
+  t3.data := resultData
+  t3.shape := t1.shape
+  t3.strides := t1.strides
+  t3.ndim := t1.ndim
+  t3.refcount := 1
+  fold TensorValid(t3)
+  success := true
+}
+
+method tensorAddScalar(t: Ref, scalar: Int) returns (tResult: Ref)
+  requires TensorValid(t)
+  ensures TensorValid(t)
+  ensures TensorValid(tResult)
+  ensures tResult.shape == t.shape
+{
+  unfold TensorValid(t)
+  
+  var resultData: Seq[Int] := Seq[Int]()
+  var i: Int := 0
+  
+  while (i < |t.data|)
+    invariant 0 <= i && i <= |t.data|
+    invariant |resultData| == i
+    invariant acc(t.data)
+  {
+    resultData := resultData ++ Seq(t.data[i] + scalar)
+    i := i + 1
+  }
+  
+  fold TensorValid(t)
+  
+  tResult := new(data, shape, strides, ndim, refcount)
+  tResult.data := resultData
+  tResult.shape := t.shape
+  tResult.strides := t.strides
+  tResult.ndim := t.ndim
+  tResult.refcount := 1
+  fold TensorValid(tResult)
+}
+
+method tensorMulScalar(t: Ref, scalar: Int) returns (tResult: Ref)
+  requires TensorValid(t)
+  ensures TensorValid(t)
+  ensures TensorValid(tResult)
+  ensures tResult.shape == t.shape
+{
+  unfold TensorValid(t)
+  
+  var resultData: Seq[Int] := Seq[Int]()
+  var i: Int := 0
+  
+  while (i < |t.data|)
+    invariant 0 <= i && i <= |t.data|
+    invariant |resultData| == i
+    invariant acc(t.data)
+  {
+    resultData := resultData ++ Seq(t.data[i] * scalar)
+    i := i + 1
+  }
+  
+  fold TensorValid(t)
+  
+  tResult := new(data, shape, strides, ndim, refcount)
+  tResult.data := resultData
+  tResult.shape := t.shape
+  tResult.strides := t.strides
+  tResult.ndim := t.ndim
+  tResult.refcount := 1
+  fold TensorValid(tResult)
+}
+
+method tensorCopy(t: Ref) returns (tCopy: Ref)
+  requires TensorValid(t)
+  ensures TensorValid(t)
+  ensures TensorValid(tCopy)
+  ensures tCopy.shape == t.shape
+  ensures tCopy.data == t.data
+  ensures tCopy != t
+{
+  unfold TensorValid(t)
+  
+  tCopy := new(data, shape, strides, ndim, refcount)
+  tCopy.data := t.data
+  tCopy.shape := t.shape
+  tCopy.strides := t.strides
+  tCopy.ndim := t.ndim
+  tCopy.refcount := 1
+  
+  fold TensorValid(t)
+  fold TensorValid(tCopy)
+}
+
+method tensorReshape(t: Ref, newShape: Seq[Int]) returns (tReshaped: Ref, success: Bool)
+  requires TensorValid(t)
+  requires |newShape| > 0
+  ensures TensorValid(t)
+  ensures success ==> TensorValid(tReshaped)
+  ensures success ==> shapeSize(newShape) == |t.data|
+  ensures success ==> tReshaped.shape == newShape
+{
+  unfold TensorValid(t)
+  
+  if (shapeSize(newShape) == |t.data|) {
+    tReshaped := new(data, shape, strides, ndim, refcount)
+    tReshaped.data := t.data
+    tReshaped.shape := newShape
+    tReshaped.strides := computeStrides(newShape, 0)
+    tReshaped.ndim := |newShape|
+    tReshaped.refcount := 1
+    fold TensorValid(tReshaped)
+    success := true
+  } else {
+    tReshaped := t
+    success := false
+  }
+  
+  fold TensorValid(t)
+}
+
+method tensorLifecycleSafe(shape: Seq[Int], dataVal: Seq[Int])
+  requires |shape| > 0
+  requires |dataVal| == shapeSize(shape)
+{
+  var t: Ref
+  t := tensorInit(shape, dataVal)
+  assert TensorValid(t)
+  assert t.refcount == 1
+  
+  tensorRetain(t)
+  assert TensorValid(t)
+  assert t.refcount == 2
+  
+  var shouldFree: Bool
+  shouldFree := tensorRelease(t)
+  assert !shouldFree
+  assert TensorValid(t)
+  assert t.refcount == 1
+  
+  shouldFree := tensorRelease(t)
+  assert shouldFree
+}
+
+method tensorNoDanglingPointer(shape: Seq[Int], dataVal: Seq[Int])
+  requires |shape| > 0
+  requires |dataVal| == shapeSize(shape)
+{
+  var t: Ref
+  t := tensorInit(shape, dataVal)
+  var tCopy: Ref
+  tCopy := tensorCopy(t)
+  assert TensorValid(t)
+  assert TensorValid(tCopy)
+  assert t != tCopy
+  
+  var shouldFree: Bool
+  shouldFree := tensorRelease(t)
+  assert TensorValid(tCopy)
+}
+
+method tensorNoUseAfterFree(shape: Seq[Int], dataVal: Seq[Int])
+  requires |shape| > 0
+  requires |dataVal| == shapeSize(shape)
+{
+  var t: Ref
+  t := tensorInit(shape, dataVal)
+  assert TensorValid(t)
+  var shouldFree: Bool
+  shouldFree := tensorRelease(t)
+  assert shouldFree
+}
+
+method tensorNoDoubleFree(shape: Seq[Int], dataVal: Seq[Int])
+  requires |shape| > 0
+  requires |dataVal| == shapeSize(shape)
+{
+  var t: Ref
+  t := tensorInit(shape, dataVal)
+  assert TensorValid(t)
+  assert t.refcount == 1
+  
+  var shouldFree1: Bool
+  shouldFree1 := tensorRelease(t)
+  assert shouldFree1
+}
+
+method tensorBoundsChecked(shape: Seq[Int], dataVal: Seq[Int], indices: Seq[Int])
+  requires |shape| > 0
+  requires |dataVal| == shapeSize(shape)
+  requires |indices| == |shape|
+  requires forall i: Int :: 0 <= i && i < |indices| ==> 0 <= indices[i] && indices[i] < shape[i]
+{
+  var t: Ref
+  t := tensorInit(shape, dataVal)
+  var value: Int
+  var success: Bool
+  value, success := tensorGet(t, indices)
+  assert success
+  assert TensorValid(t)
+}

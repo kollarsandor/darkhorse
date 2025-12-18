@@ -1,0 +1,901 @@
+field data_vec: Seq[Int]
+field tensor_refcount: Int
+field shape: Seq[Int]
+
+function shapeSize(shape: Seq[Int]): Int
+  requires |shape| >= 0
+  ensures result > 0
+{
+  |shape| == 0 ? 1 : shape[0] * shapeSize(shape[1..])
+}
+
+predicate TensorSpec(t: Ref, shape_param: Seq[Int]) {
+  acc(t.data_vec) &&
+  acc(t.tensor_refcount) &&
+  acc(t.shape) &&
+  t.shape == shape_param &&
+  t.tensor_refcount > 0 &&
+  |t.data_vec| == shapeSize(shape_param) &&
+  (forall i: Int :: 0 <= i && i < |t.data_vec| ==> t.data_vec[i] >= 0)
+}
+
+method tensor_init(shape_param: Seq[Int]) returns (t: Ref)
+  requires |shape_param| > 0
+  requires forall i: Int :: 0 <= i && i < |shape_param| ==> shape_param[i] > 0
+  ensures TensorSpec(t, shape_param)
+  ensures t.tensor_refcount == 1
+  ensures forall i: Int :: 0 <= i && i < |t.data_vec| ==> t.data_vec[i] == 0
+{
+  t := new(data_vec, tensor_refcount, shape)
+  t.shape := shape_param
+  t.tensor_refcount := 1
+  var size: Int := shapeSize(shape_param)
+  t.data_vec := Seq[Int]()
+  var i: Int := 0
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant |t.data_vec| == i
+    invariant forall j: Int :: 0 <= j && j < i ==> t.data_vec[j] == 0
+  {
+    t.data_vec := t.data_vec ++ Seq(0)
+    i := i + 1
+  }
+  fold TensorSpec(t, shape_param)
+}
+
+method tensor_retain(t: Ref, shape_param: Seq[Int])
+  requires TensorSpec(t, shape_param)
+  ensures TensorSpec(t, shape_param)
+  ensures t.tensor_refcount == old(t.tensor_refcount) + 1
+{
+  unfold TensorSpec(t, shape_param)
+  t.tensor_refcount := t.tensor_refcount + 1
+  fold TensorSpec(t, shape_param)
+}
+
+method tensor_release(t: Ref, shape_param: Seq[Int]) returns (should_dealloc: Bool)
+  requires TensorSpec(t, shape_param)
+  ensures TensorSpec(t, shape_param) || should_dealloc
+  ensures should_dealloc ==> old(t.tensor_refcount) == 1
+  ensures !should_dealloc ==> TensorSpec(t, shape_param)
+  ensures !should_dealloc ==> t.tensor_refcount == old(t.tensor_refcount) - 1
+{
+  unfold TensorSpec(t, shape_param)
+  
+  if (t.tensor_refcount == 1) {
+    should_dealloc := true
+  } else {
+    t.tensor_refcount := t.tensor_refcount - 1
+    should_dealloc := false
+    fold TensorSpec(t, shape_param)
+  }
+}
+
+method tensor_fill(t: Ref, shape_param: Seq[Int], value: Int)
+  requires TensorSpec(t, shape_param)
+  requires value >= 0
+  ensures TensorSpec(t, shape_param)
+  ensures forall i: Int :: 0 <= i && i < |t.data_vec| ==> t.data_vec[i] == value
+{
+  unfold TensorSpec(t, shape_param)
+  var size: Int := |t.data_vec|
+  t.data_vec := Seq[Int]()
+  var i: Int := 0
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant |t.data_vec| == i
+    invariant forall j: Int :: 0 <= j && j < i ==> t.data_vec[j] == value
+  {
+    t.data_vec := t.data_vec ++ Seq(value)
+    i := i + 1
+  }
+  fold TensorSpec(t, shape_param)
+}
+
+method tensor_add_pointwise(t1: Ref, t2: Ref, shape_param: Seq[Int]) returns (result: Ref)
+  requires TensorSpec(t1, shape_param)
+  requires TensorSpec(t2, shape_param)
+  ensures TensorSpec(t1, shape_param)
+  ensures TensorSpec(t2, shape_param)
+  ensures TensorSpec(result, shape_param)
+  ensures forall i: Int :: 0 <= i && i < |result.data_vec| ==>
+    result.data_vec[i] == old(t1.data_vec)[i] + old(t2.data_vec)[i]
+{
+  unfold TensorSpec(t1, shape_param)
+  unfold TensorSpec(t2, shape_param)
+  
+  result := new(data_vec, tensor_refcount, shape)
+  result.shape := shape_param
+  result.tensor_refcount := 1
+  result.data_vec := Seq[Int]()
+  
+  var i: Int := 0
+  var size: Int := |t1.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant |result.data_vec| == i
+    invariant forall j: Int :: 0 <= j && j < i ==>
+      result.data_vec[j] == t1.data_vec[j] + t2.data_vec[j]
+  {
+    result.data_vec := result.data_vec ++ Seq(t1.data_vec[i] + t2.data_vec[i])
+    i := i + 1
+  }
+  
+  fold TensorSpec(t1, shape_param)
+  fold TensorSpec(t2, shape_param)
+  fold TensorSpec(result, shape_param)
+}
+
+method tensor_sub_pointwise(t1: Ref, t2: Ref, shape_param: Seq[Int]) returns (result: Ref)
+  requires TensorSpec(t1, shape_param)
+  requires TensorSpec(t2, shape_param)
+  ensures TensorSpec(t1, shape_param)
+  ensures TensorSpec(t2, shape_param)
+  ensures TensorSpec(result, shape_param)
+  ensures forall i: Int :: 0 <= i && i < |result.data_vec| ==>
+    result.data_vec[i] == (old(t1.data_vec)[i] >= old(t2.data_vec)[i] ?
+      old(t1.data_vec)[i] - old(t2.data_vec)[i] : 0)
+{
+  unfold TensorSpec(t1, shape_param)
+  unfold TensorSpec(t2, shape_param)
+  
+  result := new(data_vec, tensor_refcount, shape)
+  result.shape := shape_param
+  result.tensor_refcount := 1
+  result.data_vec := Seq[Int]()
+  
+  var i: Int := 0
+  var size: Int := |t1.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant |result.data_vec| == i
+    invariant forall j: Int :: 0 <= j && j < i ==>
+      result.data_vec[j] == (t1.data_vec[j] >= t2.data_vec[j] ?
+        t1.data_vec[j] - t2.data_vec[j] : 0)
+  {
+    var val: Int := (t1.data_vec[i] >= t2.data_vec[i] ?
+                     t1.data_vec[i] - t2.data_vec[i] : 0)
+    result.data_vec := result.data_vec ++ Seq(val)
+    i := i + 1
+  }
+  
+  fold TensorSpec(t1, shape_param)
+  fold TensorSpec(t2, shape_param)
+  fold TensorSpec(result, shape_param)
+}
+
+method tensor_mul_pointwise(t1: Ref, t2: Ref, shape_param: Seq[Int]) returns (result: Ref)
+  requires TensorSpec(t1, shape_param)
+  requires TensorSpec(t2, shape_param)
+  ensures TensorSpec(t1, shape_param)
+  ensures TensorSpec(t2, shape_param)
+  ensures TensorSpec(result, shape_param)
+  ensures forall i: Int :: 0 <= i && i < |result.data_vec| ==>
+    result.data_vec[i] == old(t1.data_vec)[i] * old(t2.data_vec)[i]
+{
+  unfold TensorSpec(t1, shape_param)
+  unfold TensorSpec(t2, shape_param)
+  
+  result := new(data_vec, tensor_refcount, shape)
+  result.shape := shape_param
+  result.tensor_refcount := 1
+  result.data_vec := Seq[Int]()
+  
+  var i: Int := 0
+  var size: Int := |t1.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant |result.data_vec| == i
+    invariant forall j: Int :: 0 <= j && j < i ==>
+      result.data_vec[j] == t1.data_vec[j] * t2.data_vec[j]
+  {
+    result.data_vec := result.data_vec ++ Seq(t1.data_vec[i] * t2.data_vec[i])
+    i := i + 1
+  }
+  
+  fold TensorSpec(t1, shape_param)
+  fold TensorSpec(t2, shape_param)
+  fold TensorSpec(result, shape_param)
+}
+
+method tensor_scalar_add(t: Ref, shape_param: Seq[Int], scalar: Int) returns (result: Ref)
+  requires TensorSpec(t, shape_param)
+  requires scalar >= 0
+  ensures TensorSpec(t, shape_param)
+  ensures TensorSpec(result, shape_param)
+  ensures forall i: Int :: 0 <= i && i < |result.data_vec| ==>
+    result.data_vec[i] == old(t.data_vec)[i] + scalar
+{
+  unfold TensorSpec(t, shape_param)
+  
+  result := new(data_vec, tensor_refcount, shape)
+  result.shape := shape_param
+  result.tensor_refcount := 1
+  result.data_vec := Seq[Int]()
+  
+  var i: Int := 0
+  var size: Int := |t.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant |result.data_vec| == i
+    invariant forall j: Int :: 0 <= j && j < i ==>
+      result.data_vec[j] == t.data_vec[j] + scalar
+  {
+    result.data_vec := result.data_vec ++ Seq(t.data_vec[i] + scalar)
+    i := i + 1
+  }
+  
+  fold TensorSpec(t, shape_param)
+  fold TensorSpec(result, shape_param)
+}
+
+method tensor_scalar_mul(t: Ref, shape_param: Seq[Int], scalar: Int) returns (result: Ref)
+  requires TensorSpec(t, shape_param)
+  requires scalar >= 0
+  ensures TensorSpec(t, shape_param)
+  ensures TensorSpec(result, shape_param)
+  ensures forall i: Int :: 0 <= i && i < |result.data_vec| ==>
+    result.data_vec[i] == old(t.data_vec)[i] * scalar
+{
+  unfold TensorSpec(t, shape_param)
+  
+  result := new(data_vec, tensor_refcount, shape)
+  result.shape := shape_param
+  result.tensor_refcount := 1
+  result.data_vec := Seq[Int]()
+  
+  var i: Int := 0
+  var size: Int := |t.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant |result.data_vec| == i
+    invariant forall j: Int :: 0 <= j && j < i ==>
+      result.data_vec[j] == t.data_vec[j] * scalar
+  {
+    result.data_vec := result.data_vec ++ Seq(t.data_vec[i] * scalar)
+    i := i + 1
+  }
+  
+  fold TensorSpec(t, shape_param)
+  fold TensorSpec(result, shape_param)
+}
+
+method tensor_sum_all(t: Ref, shape_param: Seq[Int]) returns (sum: Int)
+  requires TensorSpec(t, shape_param)
+  ensures TensorSpec(t, shape_param)
+  ensures sum >= 0
+{
+  unfold TensorSpec(t, shape_param)
+  
+  sum := 0
+  var i: Int := 0
+  var size: Int := |t.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant sum >= 0
+  {
+    sum := sum + t.data_vec[i]
+    i := i + 1
+  }
+  
+  fold TensorSpec(t, shape_param)
+}
+
+method tensor_max_element(t: Ref, shape_param: Seq[Int]) returns (max_val: Int)
+  requires TensorSpec(t, shape_param)
+  requires |shape_param| > 0
+  ensures TensorSpec(t, shape_param)
+  ensures max_val >= 0
+{
+  unfold TensorSpec(t, shape_param)
+  
+  max_val := 0
+  var i: Int := 0
+  var size: Int := |t.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant max_val >= 0
+  {
+    if (t.data_vec[i] > max_val) {
+      max_val := t.data_vec[i]
+    }
+    i := i + 1
+  }
+  
+  fold TensorSpec(t, shape_param)
+}
+
+method tensor_min_element(t: Ref, shape_param: Seq[Int]) returns (min_val: Int)
+  requires TensorSpec(t, shape_param)
+  requires |shape_param| > 0
+  ensures TensorSpec(t, shape_param)
+  ensures min_val >= 0
+{
+  unfold TensorSpec(t, shape_param)
+  
+  min_val := 1000000000
+  var i: Int := 0
+  var size: Int := |t.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant min_val >= 0
+  {
+    if (t.data_vec[i] < min_val) {
+      min_val := t.data_vec[i]
+    }
+    i := i + 1
+  }
+  
+  fold TensorSpec(t, shape_param)
+}
+
+function reshapeValid(oldShape: Seq[Int], newShape: Seq[Int]): Bool
+{
+  shapeSize(oldShape) == shapeSize(newShape)
+}
+
+function broadcastCompatible(s1: Seq[Int], s2: Seq[Int]): Bool
+  decreases |s1| + |s2|
+{
+  |s1| == 0 && |s2| == 0 ? true :
+  |s1| == 0 && |s2| > 0 ? broadcastCompatible(s1, s2[1..]) :
+  |s1| > 0 && |s2| == 0 ? broadcastCompatible(s1[1..], s2) :
+  |s1| > 0 && |s2| > 0 ?
+    ((s1[0] == s2[0] || s1[0] == 1 || s2[0] == 1) &&
+     broadcastCompatible(s1[1..], s2[1..])) :
+  false
+}
+
+method tensor_get(t: Ref, shape_param: Seq[Int], index: Int) returns (val: Int)
+  requires TensorSpec(t, shape_param)
+  requires 0 <= index && index < shapeSize(shape_param)
+  ensures TensorSpec(t, shape_param)
+  ensures val == old(t.data_vec)[index]
+{
+  unfold TensorSpec(t, shape_param)
+  val := t.data_vec[index]
+  fold TensorSpec(t, shape_param)
+}
+
+method tensor_set(t: Ref, shape_param: Seq[Int], index: Int, value: Int)
+  requires TensorSpec(t, shape_param)
+  requires 0 <= index && index < shapeSize(shape_param)
+  requires value >= 0
+  ensures TensorSpec(t, shape_param)
+  ensures t.data_vec[index] == value
+  ensures forall i: Int :: (0 <= i && i < |t.data_vec| && i != index) ==>
+    t.data_vec[i] == old(t.data_vec)[i]
+{
+  unfold TensorSpec(t, shape_param)
+  t.data_vec := t.data_vec[index := value]
+  fold TensorSpec(t, shape_param)
+}
+
+method tensor_copy(t: Ref, shape_param: Seq[Int]) returns (result: Ref)
+  requires TensorSpec(t, shape_param)
+  ensures TensorSpec(t, shape_param)
+  ensures TensorSpec(result, shape_param)
+  ensures result.data_vec == old(t.data_vec)
+  ensures result.tensor_refcount == 1
+{
+  unfold TensorSpec(t, shape_param)
+  
+  result := new(data_vec, tensor_refcount, shape)
+  result.shape := shape_param
+  result.tensor_refcount := 1
+  result.data_vec := t.data_vec
+  
+  fold TensorSpec(t, shape_param)
+  fold TensorSpec(result, shape_param)
+}
+
+method tensor_reshape(t: Ref, old_shape: Seq[Int], new_shape: Seq[Int]) returns (result: Ref)
+  requires TensorSpec(t, old_shape)
+  requires shapeSize(old_shape) == shapeSize(new_shape)
+  ensures TensorSpec(t, old_shape)
+  ensures TensorSpec(result, new_shape)
+  ensures result.data_vec == old(t.data_vec)
+{
+  unfold TensorSpec(t, old_shape)
+  
+  result := new(data_vec, tensor_refcount, shape)
+  result.shape := new_shape
+  result.tensor_refcount := 1
+  result.data_vec := t.data_vec
+  
+  fold TensorSpec(t, old_shape)
+  fold TensorSpec(result, new_shape)
+}
+
+function dotProduct(v1: Seq[Int], v2: Seq[Int]): Int
+  requires |v1| == |v2|
+  ensures result >= 0
+{
+  |v1| == 0 ? 0 : v1[0] * v2[0] + dotProduct(v1[1..], v2[1..])
+}
+
+method tensor_dot_product(t1: Ref, t2: Ref, shape_param: Seq[Int]) returns (result: Int)
+  requires TensorSpec(t1, shape_param)
+  requires TensorSpec(t2, shape_param)
+  ensures TensorSpec(t1, shape_param)
+  ensures TensorSpec(t2, shape_param)
+  ensures result >= 0
+{
+  unfold TensorSpec(t1, shape_param)
+  unfold TensorSpec(t2, shape_param)
+  
+  result := 0
+  var i: Int := 0
+  var size: Int := |t1.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant result >= 0
+  {
+    result := result + t1.data_vec[i] * t2.data_vec[i]
+    i := i + 1
+  }
+  
+  fold TensorSpec(t1, shape_param)
+  fold TensorSpec(t2, shape_param)
+}
+
+method tensor_norm(t: Ref, shape_param: Seq[Int]) returns (norm: Int)
+  requires TensorSpec(t, shape_param)
+  ensures TensorSpec(t, shape_param)
+  ensures norm >= 0
+{
+  unfold TensorSpec(t, shape_param)
+  
+  norm := 0
+  var i: Int := 0
+  var size: Int := |t.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant norm >= 0
+  {
+    norm := norm + t.data_vec[i] * t.data_vec[i]
+    i := i + 1
+  }
+  
+  fold TensorSpec(t, shape_param)
+}
+
+method tensor_normalize_inplace(t: Ref, shape_param: Seq[Int], eps: Int)
+  requires TensorSpec(t, shape_param)
+  requires eps > 0
+  ensures TensorSpec(t, shape_param)
+{
+  unfold TensorSpec(t, shape_param)
+  
+  var mean: Int := 0
+  var i: Int := 0
+  var size: Int := |t.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant mean >= 0
+  {
+    mean := mean + t.data_vec[i]
+    i := i + 1
+  }
+  
+  if (size > 0) {
+    mean := mean / size
+  }
+  
+  t.data_vec := Seq[Int]()
+  i := 0
+  var temp_data: Seq[Int] := Seq[Int]()
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant |t.data_vec| == i
+  {
+    var centered: Int := old(t.data_vec)[i] - mean
+    var normalized: Int := centered / (eps + 1)
+    t.data_vec := t.data_vec ++ Seq(normalized)
+    i := i + 1
+  }
+  
+  fold TensorSpec(t, shape_param)
+}
+
+method tensor_apply_relu(t: Ref, shape_param: Seq[Int]) returns (result: Ref)
+  requires TensorSpec(t, shape_param)
+  ensures TensorSpec(t, shape_param)
+  ensures TensorSpec(result, shape_param)
+  ensures forall i: Int :: 0 <= i && i < |result.data_vec| ==>
+    result.data_vec[i] == (old(t.data_vec)[i] >= 0 ? old(t.data_vec)[i] : 0)
+{
+  unfold TensorSpec(t, shape_param)
+  
+  result := new(data_vec, tensor_refcount, shape)
+  result.shape := shape_param
+  result.tensor_refcount := 1
+  result.data_vec := Seq[Int]()
+  
+  var i: Int := 0
+  var size: Int := |t.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant |result.data_vec| == i
+    invariant forall j: Int :: 0 <= j && j < i ==>
+      result.data_vec[j] == (t.data_vec[j] >= 0 ? t.data_vec[j] : 0)
+  {
+    var val: Int := (t.data_vec[i] >= 0 ? t.data_vec[i] : 0)
+    result.data_vec := result.data_vec ++ Seq(val)
+    i := i + 1
+  }
+  
+  fold TensorSpec(t, shape_param)
+  fold TensorSpec(result, shape_param)
+}
+
+method tensor_clip(t: Ref, shape_param: Seq[Int], min_val: Int, max_val: Int) returns (result: Ref)
+  requires TensorSpec(t, shape_param)
+  requires min_val >= 0
+  requires max_val >= min_val
+  ensures TensorSpec(t, shape_param)
+  ensures TensorSpec(result, shape_param)
+  ensures forall i: Int :: 0 <= i && i < |result.data_vec| ==>
+    result.data_vec[i] >= min_val && result.data_vec[i] <= max_val
+{
+  unfold TensorSpec(t, shape_param)
+  
+  result := new(data_vec, tensor_refcount, shape)
+  result.shape := shape_param
+  result.tensor_refcount := 1
+  result.data_vec := Seq[Int]()
+  
+  var i: Int := 0
+  var size: Int := |t.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant |result.data_vec| == i
+    invariant forall j: Int :: 0 <= j && j < i ==>
+      result.data_vec[j] >= min_val && result.data_vec[j] <= max_val
+  {
+    var val: Int := t.data_vec[i]
+    if (val < min_val) {
+      val := min_val
+    } else {
+      if (val > max_val) {
+        val := max_val
+      }
+    }
+    result.data_vec := result.data_vec ++ Seq(val)
+    i := i + 1
+  }
+  
+  fold TensorSpec(t, shape_param)
+  fold TensorSpec(result, shape_param)
+}
+
+method tensor_abs(t: Ref, shape_param: Seq[Int]) returns (result: Ref)
+  requires TensorSpec(t, shape_param)
+  ensures TensorSpec(t, shape_param)
+  ensures TensorSpec(result, shape_param)
+  ensures forall i: Int :: 0 <= i && i < |result.data_vec| ==>
+    result.data_vec[i] >= 0
+{
+  unfold TensorSpec(t, shape_param)
+  
+  result := new(data_vec, tensor_refcount, shape)
+  result.shape := shape_param
+  result.tensor_refcount := 1
+  result.data_vec := Seq[Int]()
+  
+  var i: Int := 0
+  var size: Int := |t.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant |result.data_vec| == i
+    invariant forall j: Int :: 0 <= j && j < i ==>
+      result.data_vec[j] >= 0
+  {
+    var val: Int := t.data_vec[i]
+    if (val < 0) {
+      val := -val
+    }
+    result.data_vec := result.data_vec ++ Seq(val)
+    i := i + 1
+  }
+  
+  fold TensorSpec(t, shape_param)
+  fold TensorSpec(result, shape_param)
+}
+
+method tensor_exp_approx(t: Ref, shape_param: Seq[Int]) returns (result: Ref)
+  requires TensorSpec(t, shape_param)
+  ensures TensorSpec(t, shape_param)
+  ensures TensorSpec(result, shape_param)
+  ensures forall i: Int :: 0 <= i && i < |result.data_vec| ==>
+    result.data_vec[i] >= 0
+{
+  unfold TensorSpec(t, shape_param)
+  
+  result := new(data_vec, tensor_refcount, shape)
+  result.shape := shape_param
+  result.tensor_refcount := 1
+  result.data_vec := Seq[Int]()
+  
+  var i: Int := 0
+  var size: Int := |t.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant |result.data_vec| == i
+    invariant forall j: Int :: 0 <= j && j < i ==>
+      result.data_vec[j] >= 0
+  {
+    var x: Int := t.data_vec[i]
+    var exp_val: Int := 1 + x + (x * x) / 2
+    if (exp_val < 0) {
+      exp_val := 1
+    }
+    result.data_vec := result.data_vec ++ Seq(exp_val)
+    i := i + 1
+  }
+  
+  fold TensorSpec(t, shape_param)
+  fold TensorSpec(result, shape_param)
+}
+
+method tensor_pow(t: Ref, shape_param: Seq[Int], exponent: Int) returns (result: Ref)
+  requires TensorSpec(t, shape_param)
+  requires exponent >= 0
+  ensures TensorSpec(t, shape_param)
+  ensures TensorSpec(result, shape_param)
+  ensures forall i: Int :: 0 <= i && i < |result.data_vec| ==>
+    result.data_vec[i] >= 0
+{
+  unfold TensorSpec(t, shape_param)
+  
+  result := new(data_vec, tensor_refcount, shape)
+  result.shape := shape_param
+  result.tensor_refcount := 1
+  result.data_vec := Seq[Int]()
+  
+  var i: Int := 0
+  var size: Int := |t.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant |result.data_vec| == i
+    invariant forall j: Int :: 0 <= j && j < i ==>
+      result.data_vec[j] >= 0
+  {
+    var base: Int := t.data_vec[i]
+    var pow_val: Int := 1
+    var e: Int := exponent
+    
+    while (e > 0)
+      invariant e >= 0
+      invariant pow_val >= 0
+    {
+      pow_val := pow_val * base
+      e := e - 1
+    }
+    
+    if (pow_val < 0) {
+      pow_val := 0
+    }
+    
+    result.data_vec := result.data_vec ++ Seq(pow_val)
+    i := i + 1
+  }
+  
+  fold TensorSpec(t, shape_param)
+  fold TensorSpec(result, shape_param)
+}
+
+method tensor_div_pointwise(t1: Ref, t2: Ref, shape_param: Seq[Int], eps: Int) returns (result: Ref)
+  requires TensorSpec(t1, shape_param)
+  requires TensorSpec(t2, shape_param)
+  requires eps > 0
+  ensures TensorSpec(t1, shape_param)
+  ensures TensorSpec(t2, shape_param)
+  ensures TensorSpec(result, shape_param)
+  ensures forall i: Int :: 0 <= i && i < |result.data_vec| ==>
+    result.data_vec[i] >= 0
+{
+  unfold TensorSpec(t1, shape_param)
+  unfold TensorSpec(t2, shape_param)
+  
+  result := new(data_vec, tensor_refcount, shape)
+  result.shape := shape_param
+  result.tensor_refcount := 1
+  result.data_vec := Seq[Int]()
+  
+  var i: Int := 0
+  var size: Int := |t1.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant |result.data_vec| == i
+    invariant forall j: Int :: 0 <= j && j < i ==>
+      result.data_vec[j] >= 0
+  {
+    var numerator: Int := t1.data_vec[i]
+    var denominator: Int := t2.data_vec[i] + eps
+    var quotient: Int := numerator / denominator
+    
+    if (quotient < 0) {
+      quotient := 0
+    }
+    
+    result.data_vec := result.data_vec ++ Seq(quotient)
+    i := i + 1
+  }
+  
+  fold TensorSpec(t1, shape_param)
+  fold TensorSpec(t2, shape_param)
+  fold TensorSpec(result, shape_param)
+}
+
+method tensor_sqrt_approx(t: Ref, shape_param: Seq[Int]) returns (result: Ref)
+  requires TensorSpec(t, shape_param)
+  ensures TensorSpec(t, shape_param)
+  ensures TensorSpec(result, shape_param)
+  ensures forall i: Int :: 0 <= i && i < |result.data_vec| ==>
+    result.data_vec[i] >= 0
+{
+  unfold TensorSpec(t, shape_param)
+  
+  result := new(data_vec, tensor_refcount, shape)
+  result.shape := shape_param
+  result.tensor_refcount := 1
+  result.data_vec := Seq[Int]()
+  
+  var i: Int := 0
+  var size: Int := |t.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant |result.data_vec| == i
+    invariant forall j: Int :: 0 <= j && j < i ==>
+      result.data_vec[j] >= 0
+  {
+    var val: Int := t.data_vec[i]
+    var sqrt_val: Int := val / 2
+    
+    if (sqrt_val < 0) {
+      sqrt_val := 0
+    }
+    
+    result.data_vec := result.data_vec ++ Seq(sqrt_val)
+    i := i + 1
+  }
+  
+  fold TensorSpec(t, shape_param)
+  fold TensorSpec(result, shape_param)
+}
+
+method tensor_mean(t: Ref, shape_param: Seq[Int]) returns (mean: Int)
+  requires TensorSpec(t, shape_param)
+  requires |shape_param| > 0
+  ensures TensorSpec(t, shape_param)
+  ensures mean >= 0
+{
+  var sum: Int
+  sum := tensor_sum_all(t, shape_param)
+  
+  var size: Int := shapeSize(shape_param)
+  if (size > 0) {
+    mean := sum / size
+  } else {
+    mean := 0
+  }
+}
+
+method tensor_variance(t: Ref, shape_param: Seq[Int]) returns (variance: Int)
+  requires TensorSpec(t, shape_param)
+  requires |shape_param| > 0
+  ensures TensorSpec(t, shape_param)
+  ensures variance >= 0
+{
+  unfold TensorSpec(t, shape_param)
+  
+  var mean: Int := 0
+  var i: Int := 0
+  var size: Int := |t.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant mean >= 0
+  {
+    mean := mean + t.data_vec[i]
+    i := i + 1
+  }
+  
+  if (size > 0) {
+    mean := mean / size
+  }
+  
+  variance := 0
+  i := 0
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant variance >= 0
+  {
+    var diff: Int := t.data_vec[i] - mean
+    variance := variance + diff * diff
+    i := i + 1
+  }
+  
+  if (size > 0) {
+    variance := variance / size
+  }
+  
+  fold TensorSpec(t, shape_param)
+}
+
+method tensor_std_dev(t: Ref, shape_param: Seq[Int]) returns (std_dev: Int)
+  requires TensorSpec(t, shape_param)
+  requires |shape_param| > 0
+  ensures TensorSpec(t, shape_param)
+  ensures std_dev >= 0
+{
+  var variance: Int
+  variance := tensor_variance(t, shape_param)
+  std_dev := variance / 2
+}
+
+method tensor_batch_normalize(t: Ref, shape_param: Seq[Int], eps: Int) returns (result: Ref)
+  requires TensorSpec(t, shape_param)
+  requires |shape_param| > 0
+  requires eps > 0
+  ensures TensorSpec(t, shape_param)
+  ensures TensorSpec(result, shape_param)
+{
+  var mean: Int
+  var std: Int
+  
+  mean := tensor_mean(t, shape_param)
+  std := tensor_std_dev(t, shape_param)
+  
+  unfold TensorSpec(t, shape_param)
+  
+  result := new(data_vec, tensor_refcount, shape)
+  result.shape := shape_param
+  result.tensor_refcount := 1
+  result.data_vec := Seq[Int]()
+  
+  var i: Int := 0
+  var size: Int := |t.data_vec|
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant |result.data_vec| == i
+    invariant forall j: Int :: 0 <= j && j < i ==>
+      result.data_vec[j] >= 0
+  {
+    var centered: Int := t.data_vec[i] - mean
+    var normalized: Int := centered / (std + eps)
+    
+    if (normalized < 0) {
+      normalized := -normalized
+    }
+    
+    result.data_vec := result.data_vec ++ Seq(normalized)
+    i := i + 1
+  }
+  
+  fold TensorSpec(t, shape_param)
+  fold TensorSpec(result, shape_param)
+}
+
